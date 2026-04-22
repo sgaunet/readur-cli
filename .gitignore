@@ -1,0 +1,14 @@
+# goreleaser
+/dist
+# Editor / OS
+.DS_Store
+Thumbs.db
+# Environment / secrets
+.env
+.env.*
+!.env.example
+# Test artifacts
+testdata/tmp/
+/specs
+/.specify
+/.claude

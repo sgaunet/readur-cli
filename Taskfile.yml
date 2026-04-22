@@ -1,0 +1,38 @@
+version: "3"
+
+tasks:
+  default:
+    desc: List available tasks.
+    cmds:
+      - task -a
+
+  test:
+    desc: Run the full test suite with the race detector.
+    cmds:
+      - go test -race -timeout 120s ./...
+
+  lint:
+    desc: Run golangci-lint.
+    cmds:
+      - golangci-lint run ./...
+
+  fmt:
+    desc: Format sources.
+    cmds:
+      - gofmt -s -w .
+      - goimports -w -local github.com/sgaunet/readur-cli .
+
+  bench:
+    desc: Run benchmarks (constitution Principle IV).
+    cmds:
+      - go test -run=^$ -bench=. -benchmem -benchtime=3s ./...
+
+  snapshot:
+    desc: "Create a snapshot release"
+    cmds:
+      - GITLAB_TOKEN="" goreleaser --clean --snapshot
+
+  release:
+    desc: "Create a release"
+    cmds:
+      - GITLAB_TOKEN="" goreleaser --clean
