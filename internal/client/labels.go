@@ -15,6 +15,11 @@ import (
 // starts with a byte that is neither '[' (array) nor '{' (object).
 var errLabelsUnexpectedShape = errors.New("unexpected labels response shape")
 
+// labelsBodyReadLimit caps the labels list response body at 16 MiB —
+// enough headroom for very large label catalogs while preventing a
+// pathological server from exhausting memory.
+const labelsBodyReadLimit = 16 << 20
+
 // Label mirrors one entry in the Readur labels collection. Fields map
 // to the JSON shape documented at docs.readur.app/api-reference/.
 // Unknown fields are tolerated — json decoding ignores extras.
@@ -44,11 +49,11 @@ func (c *Client) ListLabels(ctx context.Context) ([]Label, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, errorBodyReadLimit))
 		return nil, ClassifyStatus(resp.StatusCode, string(raw))
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20)) // 16 MiB cap
+	body, err := io.ReadAll(io.LimitReader(resp.Body, labelsBodyReadLimit))
 	if err != nil {
 		return nil, fmt.Errorf("read labels response: %w", err)
 	}
@@ -83,7 +88,7 @@ func (c *Client) SetDocumentLabels(ctx context.Context, documentID string, label
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, errorBodyReadLimit))
 		return ClassifyStatus(resp.StatusCode, string(raw))
 	}
 	return nil

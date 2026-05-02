@@ -12,6 +12,12 @@ import (
 	"github.com/sgaunet/readur-cli/internal/client"
 )
 
+const (
+	labelsTablePadding   = 2
+	labelsDescTruncate   = 48
+	labelsTruncateMinLen = 4
+)
+
 // LabelsListJSON is the JSON shape emitted by `readur labels list --json`.
 type LabelsListJSON struct {
 	Labels   []LabelRow `json:"labels"`
@@ -111,10 +117,10 @@ func sortLabels(ls []client.Label, key string) {
 // truncated to keep lines short; users wanting full output can use --json.
 func renderLabelsTable(ls []client.Label) string {
 	var b strings.Builder
-	tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+	tw := tabwriter.NewWriter(&b, 0, 0, labelsTablePadding, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "NAME\tCOUNT\tCOLOR\tID\tDESCRIPTION")
 	for _, l := range ls {
-		desc := truncate(l.Description, 48)
+		desc := truncate(l.Description, labelsDescTruncate)
 		_, _ = fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\n", l.Name, l.DocumentCount, dashIfEmpty(l.Color), l.ID, dashIfEmpty(desc))
 	}
 	_ = tw.Flush()
@@ -140,7 +146,7 @@ func truncate(s string, limit int) string {
 	if len(s) <= limit {
 		return s
 	}
-	if limit < 4 {
+	if limit < labelsTruncateMinLen {
 		return s[:limit]
 	}
 	return s[:limit-1] + "…"

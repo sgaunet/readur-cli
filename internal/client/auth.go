@@ -65,7 +65,7 @@ func (c *Client) Login(ctx context.Context, req LoginRequest) (*LoginResult, err
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, errorBodyReadLimit))
 		return nil, ClassifyStatus(resp.StatusCode, string(raw))
 	}
 

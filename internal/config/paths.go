@@ -17,6 +17,10 @@ const (
 	appName    = "readur-cli"
 	configFile = "config.toml"
 	stateDir   = "state"
+
+	// configDirMode is the permission bits used when creating the
+	// CLI's per-user config directory: rwx for the owner only.
+	configDirMode os.FileMode = 0o700
 )
 
 // Paths resolves the filesystem locations used by the CLI.
@@ -71,7 +75,7 @@ func EnsureDir(dir string) error {
 	if dir == "" {
 		return cerrors.New(cerrors.CodeConfig, "empty directory path", nil)
 	}
-	err := os.MkdirAll(dir, 0o700)
+	err := os.MkdirAll(dir, configDirMode)
 	if err != nil {
 		return cerrors.New(cerrors.CodeCantCreat,
 			"cannot create "+dir, err)

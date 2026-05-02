@@ -18,6 +18,11 @@ import (
 // local alias to avoid shadowing the package name within wrapTransportError.
 var errorsAs = stderrors.As
 
+// errorBodyReadLimit caps how many bytes of a non-2xx response body
+// the client reads before classifying. 8 KiB is enough to capture any
+// reasonable error message while bounding memory.
+const errorBodyReadLimit = 8192
+
 // tokenExpirySkew is the slack window used by proactive rotation: if
 // the stored token expiry is within this distance of "now", the client
 // re-authenticates BEFORE issuing the next request, avoiding a wasted

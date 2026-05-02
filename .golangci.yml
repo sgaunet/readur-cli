@@ -17,3 +17,27 @@ linters:
     - forbidigo
     - varnamelen
     - exhaustruct
+
+  settings:
+    # JSON keys are the CLI's wire contract (see contracts/json-output.md)
+    # and must match the Readur API response shapes. Both are snake_case.
+    tagliatelle:
+      case:
+        rules:
+          json: snake
+    # Internal packages already produce CLIError envelopes via cerrors.New;
+    # wrapping them again would just bury the exit-code classification.
+    wrapcheck:
+      ignore-package-globs:
+        - github.com/sgaunet/readur-cli/internal/*
+      ignore-sigs:
+        - .Err()
+        - errors.Join(
+        - errors.New(
+        - fmt.Errorf(
+        - fmt.Errorln(
+        - .Wrap(
+        - .Wrapf(
+        - .WithMessage(
+        - .WithMessagef(
+        - .WithStack(

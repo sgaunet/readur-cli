@@ -127,7 +127,7 @@ func ClassifyStatus(code int, body string) error {
 		}
 		return cerrors.New(cerrors.CodeGeneric,
 			fmt.Sprintf("server rejected request (HTTP %d): %s", code, trimmed), nil)
-	case code >= 500:
+	case code >= http.StatusInternalServerError:
 		return cerrors.New(cerrors.CodeNetwork,
 			fmt.Sprintf("server error (HTTP %d)", code), nil)
 	}

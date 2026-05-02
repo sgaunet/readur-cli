@@ -21,6 +21,11 @@ const (
 	MaxBackoff = 10 * time.Second
 )
 
+// jitterSpreadDivisor produces the ±25% spread used by the
+// exponential backoff: jitter ∈ [0, d/jitterSpreadDivisor), shifted so
+// the resulting wait sits in [0.75d, 1.25d).
+const jitterSpreadDivisor = 2
+
 // CheckRetry is the retryablehttp.CheckRetry implementation for this
 // client. It returns (shouldRetry, err) where a non-nil err halts
 // the request immediately.
@@ -73,7 +78,7 @@ func exponentialBackoff(minWait, maxWait time.Duration, attemptNumber int) time.
 	}
 	// jitter ±25%
 	// #nosec G404 — jitter does not require cryptographic randomness
-	jitter := time.Duration(rand.Int64N(int64(d) / 2))
+	jitter := time.Duration(rand.Int64N(int64(d) / jitterSpreadDivisor))
 	return d - d/4 + jitter
 }
 

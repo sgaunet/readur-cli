@@ -19,6 +19,10 @@ import (
 // errEmptyLocalPath is returned when Upload is called with an empty LocalPath.
 var errEmptyLocalPath = errors.New("empty local path")
 
+// sniffBufSize matches http.DetectContentType's internal buffer size:
+// it inspects at most the first 512 bytes of a stream.
+const sniffBufSize = 512
+
 // errUploadMissingDocumentID is returned when the server's upload
 // response omits the document id field.
 var errUploadMissingDocumentID = errors.New("server response missing document id")
@@ -86,7 +90,7 @@ func (c *Client) Upload(ctx context.Context, params UploadParams) (*UploadResult
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, errorBodyReadLimit))
 		return nil, ClassifyStatus(resp.StatusCode, string(raw))
 	}
 
@@ -285,7 +289,7 @@ func detectFileContentType(f *os.File, filename string) (string, error) {
 
 	// No extension (or no mapping) — sniff. Read up to 512 bytes, then
 	// seek back so the subsequent body stream replays from offset 0.
-	buf := make([]byte, 512)
+	buf := make([]byte, sniffBufSize)
 	n, err := io.ReadFull(f, buf)
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return "", fmt.Errorf("sniff content type: %w", err)
