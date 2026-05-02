@@ -59,31 +59,44 @@ func IsRetryableErr(err error) bool {
 	if errors.As(err, &urlErr) {
 		err = urlErr.Err
 	}
-
-	// TLS certificate verification failures: NOT retryable.
-	if strings.Contains(err.Error(), "x509") ||
-		strings.Contains(err.Error(), "tls:") {
-		// Exception: tls.RecordError on a truncated read is a connection
-		// failure, not a verification failure.
-		if !strings.Contains(err.Error(), "record overflow") &&
-			!strings.Contains(err.Error(), "unexpected EOF") {
-			return false
-		}
+	if isTLSNonRetryable(err) {
+		return false
 	}
-
-	if errors.Is(err, io.EOF) ||
-		errors.Is(err, io.ErrUnexpectedEOF) ||
-		errors.Is(err, syscall.ECONNRESET) ||
-		errors.Is(err, syscall.ECONNREFUSED) ||
-		errors.Is(err, syscall.EPIPE) {
+	if isTransientNetErr(err) {
 		return true
 	}
-
 	var netErr net.Error
 	if errors.As(err, &netErr) {
 		return netErr.Timeout()
 	}
 	return false
+}
+
+// isTLSNonRetryable reports true for TLS certificate/protocol errors that
+// should not be retried (wrong cert, bad handshake), while allowing
+// connection-level truncation errors (record overflow, unexpected EOF)
+// to fall through as retryable.
+func isTLSNonRetryable(err error) bool {
+	msg := err.Error()
+	if !strings.Contains(msg, "x509") && !strings.Contains(msg, "tls:") {
+		return false
+	}
+	// tls.RecordError on truncated reads is a connection failure, not a
+	// verification failure — allow retry.
+	if strings.Contains(msg, "record overflow") || strings.Contains(msg, "unexpected EOF") {
+		return false
+	}
+	return true
+}
+
+// isTransientNetErr reports true for well-known transient syscall and
+// io errors that justify a retry.
+func isTransientNetErr(err error) bool {
+	return errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.EPIPE)
 }
 
 // ClassifyStatus converts an HTTP status + optional body into a

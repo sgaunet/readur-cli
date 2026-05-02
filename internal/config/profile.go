@@ -24,6 +24,12 @@ var profileNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 
 // Profile is a named, per-user record of how to reach one Readur server.
 // Field names match the TOML keys exactly.
+//
+// Password is optional: it is present only when the user opted in via
+// `readur login --save-password`. When non-empty, the HTTP client uses
+// it to silently refresh an expired or revoked token (see research.md
+// §11). The field is treated as a secret exactly like Token — redacted
+// in every subcommand's output and protected by the 0600 save path.
 type Profile struct {
 	Name               string    `toml:"-"`
 	ServerURL          string    `toml:"server_url"`
@@ -32,6 +38,7 @@ type Profile struct {
 	TokenExpiry        time.Time `toml:"token_expiry,omitempty"`
 	ObtainedAt         time.Time `toml:"obtained_at"`
 	InsecureSkipVerify bool      `toml:"insecure_skip_verify,omitempty"`
+	Password           string    `toml:"password,omitempty"`
 }
 
 // Validate checks required fields. Called before save.
@@ -78,20 +85,21 @@ func NewStore(p Paths) *Store { return &Store{Paths: p} }
 // file-level default_profile name (possibly empty if none is set).
 // If the file does not exist, Load returns an empty result with no
 // error — a fresh install has no profiles yet.
-func (s *Store) Load() (profiles map[string]*Profile, defaultProfile string, err error) {
+func (s *Store) Load() (map[string]*Profile, string, error) {
 	data, rerr := os.ReadFile(s.Paths.ConfigFile)
 	if rerr != nil {
 		if os.IsNotExist(rerr) {
 			return map[string]*Profile{}, "", nil
 		}
 		return nil, "", cerrors.New(cerrors.CodeConfig,
-			fmt.Sprintf("cannot read %s", s.Paths.ConfigFile), rerr)
+			"cannot read "+s.Paths.ConfigFile, rerr)
 	}
 
 	var f file
-	if _, derr := toml.Decode(string(data), &f); derr != nil {
+	_, derr := toml.Decode(string(data), &f)
+	if derr != nil {
 		return nil, "", cerrors.New(cerrors.CodeConfig,
-			fmt.Sprintf("cannot parse %s", s.Paths.ConfigFile), derr)
+			"cannot parse "+s.Paths.ConfigFile, derr)
 	}
 	if f.Profiles == nil {
 		f.Profiles = map[string]*Profile{}
@@ -102,11 +110,53 @@ func (s *Store) Load() (profiles map[string]*Profile, defaultProfile string, err
 	return f.Profiles, f.DefaultProfile, nil
 }
 
+// configFileMode is the POSIX permission for the config file (owner read/write only).
+const configFileMode os.FileMode = 0o600
+
+// writeConfigFile performs the atomic temp+rename dance, setting 0600
+// permissions on POSIX before closing and renaming into place.
+func writeConfigFile(dir, dest string, f file) error {
+	tmp, err := os.CreateTemp(dir, ".config-*.toml")
+	if err != nil {
+		return cerrors.New(cerrors.CodeCantCreat,
+			"cannot create temp file in "+dir, err)
+	}
+	tmpName := tmp.Name()
+	// Ensure cleanup on failure paths.
+	defer func() { _ = os.Remove(tmpName) }()
+
+	if runtime.GOOS != "windows" {
+		err = tmp.Chmod(configFileMode)
+		if err != nil {
+			_ = tmp.Close()
+			return cerrors.New(cerrors.CodeCantCreat, "cannot chmod temp file", err)
+		}
+	}
+
+	enc := toml.NewEncoder(tmp)
+	err = enc.Encode(f)
+	if err != nil {
+		_ = tmp.Close()
+		return cerrors.New(cerrors.CodeCantCreat, "cannot encode config", err)
+	}
+	err = tmp.Close()
+	if err != nil {
+		return cerrors.New(cerrors.CodeCantCreat, "cannot close temp file", err)
+	}
+	err = os.Rename(tmpName, dest)
+	if err != nil {
+		return cerrors.New(cerrors.CodeCantCreat,
+			"cannot rename into place "+dest, err)
+	}
+	return nil
+}
+
 // Save atomically writes profiles + defaultProfile back to disk with
 // mode 0600 on POSIX. Atomicity is via tempfile + rename in the same
 // directory.
 func (s *Store) Save(profiles map[string]*Profile, defaultProfile string) error {
-	if err := EnsureDir(s.Paths.ConfigDir); err != nil {
+	err := EnsureDir(s.Paths.ConfigDir)
+	if err != nil {
 		return err
 	}
 
@@ -114,8 +164,9 @@ func (s *Store) Save(profiles map[string]*Profile, defaultProfile string) error 
 	names := make([]string, 0, len(profiles))
 	for name, p := range profiles {
 		p.Name = name
-		if err := p.Validate(); err != nil {
-			return err
+		verr := p.Validate()
+		if verr != nil {
+			return verr
 		}
 		names = append(names, name)
 	}
@@ -132,37 +183,7 @@ func (s *Store) Save(profiles map[string]*Profile, defaultProfile string) error 
 		DefaultProfile: defaultProfile,
 		Profiles:       profiles,
 	}
-
-	tmp, err := os.CreateTemp(s.Paths.ConfigDir, ".config-*.toml")
-	if err != nil {
-		return cerrors.New(cerrors.CodeCantCreat,
-			fmt.Sprintf("cannot create temp file in %s", s.Paths.ConfigDir), err)
-	}
-	tmpName := tmp.Name()
-	// Ensure cleanup on failure paths.
-	defer func() { _ = os.Remove(tmpName) }()
-
-	if runtime.GOOS != "windows" {
-		if err := tmp.Chmod(0o600); err != nil {
-			_ = tmp.Close()
-			return cerrors.New(cerrors.CodeCantCreat, "cannot chmod temp file", err)
-		}
-	}
-
-	enc := toml.NewEncoder(tmp)
-	if err := enc.Encode(f); err != nil {
-		_ = tmp.Close()
-		return cerrors.New(cerrors.CodeCantCreat, "cannot encode config", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return cerrors.New(cerrors.CodeCantCreat, "cannot close temp file", err)
-	}
-
-	if err := os.Rename(tmpName, s.Paths.ConfigFile); err != nil {
-		return cerrors.New(cerrors.CodeCantCreat,
-			fmt.Sprintf("cannot rename into place %s", s.Paths.ConfigFile), err)
-	}
-	return nil
+	return writeConfigFile(s.Paths.ConfigDir, s.Paths.ConfigFile, f)
 }
 
 // ResolveProfile selects the active profile from a loaded map following

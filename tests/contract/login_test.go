@@ -130,6 +130,35 @@ func TestLogin_JSON_ErrorEnvelope(t *testing.T) {
 	}
 }
 
+// Guarantee 3 (amended): --save-password and --forget-password are
+// mutually exclusive → USAGE (2).
+func TestLogin_SaveAndForgetMutuallyExclusive(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "config.toml")
+	r := runWithStdin(t, []string{
+		"--config", cfg,
+		"login", "--server", "http://127.0.0.1:1",
+		"--username", "alice", "--password-stdin",
+		"--save-password", "--forget-password",
+	}, "secret\n")
+	if r.ExitCode != 2 {
+		t.Fatalf("expected USAGE exit 2, got %d stderr=%q", r.ExitCode, r.Stderr)
+	}
+}
+
+// Help output documents --save-password and --forget-password.
+func TestLogin_Help_DocumentsSaveAndForget(t *testing.T) {
+	r := Run(t, []string{"login", "--help"}, nil)
+	if r.ExitCode != 0 {
+		t.Fatalf("help exit = %d", r.ExitCode)
+	}
+	text := r.Stdout + r.Stderr
+	for _, want := range []string{"--save-password", "--forget-password"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("help missing %q: %q", want, text)
+		}
+	}
+}
+
 // No --server and no existing profile → USAGE.
 func TestLogin_NoServerNoProfile_IsUsage(t *testing.T) {
 	cfg := filepath.Join(t.TempDir(), "config.toml")

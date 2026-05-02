@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"math/rand/v2"
 	"net/http"
 	"strconv"
@@ -30,7 +31,7 @@ const (
 func CheckRetry(ctx context.Context, resp *http.Response, err error) (bool, error) {
 	// Do not retry if the caller cancelled; surface the context error.
 	if ctx.Err() != nil {
-		return false, ctx.Err()
+		return false, fmt.Errorf("request cancelled: %w", ctx.Err())
 	}
 	if err != nil {
 		return IsRetryableErr(err), nil
@@ -83,13 +84,15 @@ func parseRetryAfter(h string, now time.Time) time.Duration {
 	if h == "" {
 		return 0
 	}
-	if secs, err := strconv.ParseInt(h, 10, 64); err == nil {
+	secs, parseIntErr := strconv.ParseInt(h, 10, 64)
+	if parseIntErr == nil {
 		if secs < 0 {
 			return 0
 		}
 		return time.Duration(secs) * time.Second
 	}
-	if t, err := http.ParseTime(h); err == nil {
+	t, parseTimeErr := http.ParseTime(h)
+	if parseTimeErr == nil {
 		if d := time.Until(t); d > 0 {
 			return d
 		}

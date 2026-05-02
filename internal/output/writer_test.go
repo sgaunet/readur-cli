@@ -60,7 +60,7 @@ func TestPrimary_JSONMinifiedWithNewline(t *testing.T) {
 func TestInfo_SuppressedInQuiet(t *testing.T) {
 	w, _, errb := newWriter()
 	_ = w.ApplyFlags(false, true, false, false)
-	w.Info("progress 1/3")
+	w.Infof("progress 1/3")
 	if errb.Len() != 0 {
 		t.Fatalf("stderr should be empty in quiet, got %q", errb.String())
 	}
@@ -69,7 +69,7 @@ func TestInfo_SuppressedInQuiet(t *testing.T) {
 func TestInfo_EmittedInNormal(t *testing.T) {
 	w, _, errb := newWriter()
 	_ = w.ApplyFlags(false, false, false, false)
-	w.Info("progress 1/3")
+	w.Infof("progress 1/3")
 	if !strings.Contains(errb.String(), "progress 1/3") {
 		t.Fatalf("expected progress on stderr, got %q", errb.String())
 	}
@@ -79,7 +79,7 @@ func TestWarn_AlwaysEmitted(t *testing.T) {
 	for _, verbose := range []bool{false, true} {
 		w, _, errb := newWriter()
 		_ = w.ApplyFlags(false, !verbose, verbose, false)
-		w.Warn("careful")
+		w.Warnf("careful")
 		if !strings.Contains(errb.String(), "warning: careful") {
 			t.Fatalf("verbose=%v: expected warning on stderr, got %q", verbose, errb.String())
 		}
@@ -90,14 +90,14 @@ func TestDebug_OnlyInVerbose(t *testing.T) {
 	// normal
 	w, _, errb := newWriter()
 	_ = w.ApplyFlags(false, false, false, false)
-	w.Debug("tick")
+	w.Debugf("tick")
 	if errb.Len() != 0 {
 		t.Fatalf("normal: debug should be silent, got %q", errb.String())
 	}
 	// verbose
 	w, _, errb = newWriter()
 	_ = w.ApplyFlags(false, false, true, false)
-	w.Debug("tick")
+	w.Debugf("tick")
 	if !strings.Contains(errb.String(), "debug: tick") {
 		t.Fatalf("verbose: expected debug line, got %q", errb.String())
 	}

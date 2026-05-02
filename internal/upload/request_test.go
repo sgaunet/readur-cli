@@ -85,15 +85,39 @@ func TestValidate_LanguageRegex(t *testing.T) {
 	}
 }
 
-func TestValidate_LabelRegex(t *testing.T) {
+func TestValidate_LabelRules(t *testing.T) {
 	p := writeTempFile(t, "x")
+
+	// Spaces, Unicode, hyphens, and digits all pass — the only
+	// server-side rules are non-empty and no comma. The CLI used to
+	// reject anything outside [A-Za-z0-9_-]+, which broke perfectly
+	// valid label names like "Médical Basile" and "To Review".
 	r, _ := upload.NewFromPath(p)
-	r.Labels = []string{"ok-label", "also_ok", "bad label"}
-	if err := r.Validate(); err == nil {
-		t.Fatalf("expected error for space in label")
+	r.Labels = []string{"Médical Basile", "To Review", "ok-label", "also_ok"}
+	if err := r.Validate(); err != nil {
+		t.Fatalf("unicode/space labels should pass, got: %v", err)
 	}
-	if cerrors.Classify(r.Validate()) != cerrors.CodeUsage {
-		t.Fatalf("label err should be USAGE")
+
+	cases := []struct {
+		name  string
+		label string
+	}{
+		{"comma", "a,b"},
+		{"empty", ""},
+		{"whitespace", "   "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _ := upload.NewFromPath(p)
+			r.Labels = []string{tc.label}
+			err := r.Validate()
+			if err == nil {
+				t.Fatalf("expected error for %q label", tc.label)
+			}
+			if cerrors.Classify(err) != cerrors.CodeUsage {
+				t.Fatalf("code = %d, want USAGE", cerrors.Classify(err))
+			}
+		})
 	}
 }
 

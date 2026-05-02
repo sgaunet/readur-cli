@@ -72,7 +72,6 @@ func TestUpload_MultipartFieldsAndBody(t *testing.T) {
 		LocalPath:   path,
 		DisplayName: "scan.pdf",
 		Title:       &title,
-		Labels:      []string{"a", "b"},
 		OCREnabled:  &ocr,
 		Language:    &lang,
 	})
@@ -91,8 +90,11 @@ func TestUpload_MultipartFieldsAndBody(t *testing.T) {
 	if got.fields["title"] != "Q2 Invoice" {
 		t.Fatalf("title = %q", got.fields["title"])
 	}
-	if got.fields["labels"] != "a,b" {
-		t.Fatalf("labels = %q", got.fields["labels"])
+	// The upstream Readur upload handler ignores any "labels" multipart
+	// field (label assignment is a separate PUT endpoint), so the client
+	// must not send one.
+	if _, has := got.fields["labels"]; has {
+		t.Fatalf("upload multipart must not carry a labels field, got %q", got.fields["labels"])
 	}
 	if got.fields["ocr_enabled"] != "false" {
 		t.Fatalf("ocr_enabled = %q", got.fields["ocr_enabled"])

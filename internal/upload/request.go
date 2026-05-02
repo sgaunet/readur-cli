@@ -5,15 +5,13 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	cerrors "github.com/sgaunet/readur-cli/internal/errors"
 )
 
-var (
-	languageRe = regexp.MustCompile(`^[a-z]{3}$`)
-	labelRe    = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
-)
+var languageRe = regexp.MustCompile(`^[a-z]{3}$`)
 
 // DocumentUploadRequest is the intent to upload one local file. Field
 // names match data-model.md §DocumentUploadRequest.
@@ -41,22 +39,22 @@ func NewFromPath(path string) (*DocumentUploadRequest, error) {
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, cerrors.New(cerrors.CodeNoInput,
-				fmt.Sprintf("file not found: %s", abs), err)
+				"file not found: "+abs, err)
 		}
 		if os.IsPermission(err) {
 			return nil, cerrors.New(cerrors.CodeNoInput,
 				fmt.Sprintf("cannot read %s: permission denied", abs), err)
 		}
 		return nil, cerrors.New(cerrors.CodeNoInput,
-			fmt.Sprintf("cannot stat %s", abs), err)
+			"cannot stat "+abs, err)
 	}
 	if !info.Mode().IsRegular() {
 		return nil, cerrors.New(cerrors.CodeNoInput,
-			fmt.Sprintf("not a regular file: %s", abs), nil)
+			"not a regular file: "+abs, nil)
 	}
 	if info.Size() == 0 {
 		return nil, cerrors.New(cerrors.CodeNoInput,
-			fmt.Sprintf("empty file: %s", abs), nil)
+			"empty file: "+abs, nil)
 	}
 	return &DocumentUploadRequest{
 		LocalPath:   abs,
@@ -78,9 +76,16 @@ func (r *DocumentUploadRequest) Validate() error {
 			fmt.Sprintf("invalid language %q (expected 3-letter ISO 639-2 code)", *r.Language), nil)
 	}
 	for _, l := range r.Labels {
-		if !labelRe.MatchString(l) {
+		// Mirror Readur's server-side rule (src/routes/labels.rs in
+		// upstream): names are non-empty and may not contain commas.
+		// Anything else — spaces, Unicode — is the server's call.
+		if strings.TrimSpace(l) == "" {
 			return cerrors.New(cerrors.CodeUsage,
-				fmt.Sprintf("invalid label %q (letters, digits, _ or - only)", l), nil)
+				"invalid label: empty or whitespace-only", nil)
+		}
+		if strings.Contains(l, ",") {
+			return cerrors.New(cerrors.CodeUsage,
+				fmt.Sprintf("invalid label %q (cannot contain commas)", l), nil)
 		}
 	}
 	return nil

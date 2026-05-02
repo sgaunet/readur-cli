@@ -16,29 +16,24 @@ const (
 	CodeConfig    = 78
 )
 
+// codeNames maps exit code values to their stable string names.
+var codeNames = map[int]string{
+	CodeOK:        "OK",
+	CodeGeneric:   "GENERIC",
+	CodeUsage:     "USAGE",
+	CodeAuth:      "AUTH",
+	CodeNetwork:   "NETWORK",
+	CodePartial:   "PARTIAL",
+	CodeNoInput:   "NOINPUT",
+	CodeCantCreat: "CANTCREAT",
+	CodeConfig:    "CONFIG",
+}
+
 // Name returns the exported constant name for an exit code, used in
 // verbose log output and JSON error objects.
 func Name(code int) string {
-	switch code {
-	case CodeOK:
-		return "OK"
-	case CodeGeneric:
-		return "GENERIC"
-	case CodeUsage:
-		return "USAGE"
-	case CodeAuth:
-		return "AUTH"
-	case CodeNetwork:
-		return "NETWORK"
-	case CodePartial:
-		return "PARTIAL"
-	case CodeNoInput:
-		return "NOINPUT"
-	case CodeCantCreat:
-		return "CANTCREAT"
-	case CodeConfig:
-		return "CONFIG"
-	default:
-		return "UNKNOWN"
+	if s, ok := codeNames[code]; ok {
+		return s
 	}
+	return "UNKNOWN"
 }

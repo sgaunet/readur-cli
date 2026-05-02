@@ -75,6 +75,89 @@ func TestConfigShow_ExistingFile_RedactsToken(t *testing.T) {
 	}
 }
 
+// FR-012 (amended): a saved password is redacted in config show
+// output — the value MUST NEVER appear; the row reports "present
+// (redacted)" when saved, "absent" otherwise.
+func TestConfigShow_RedactsPassword(t *testing.T) {
+	const secretPassword = "PLEASE-DO-NOT-LEAK-ME"
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.toml")
+	body := `default_profile = "default"
+
+[profiles.default]
+server_url = "http://example.test"
+username   = "alice"
+token      = "tk"
+password   = "` + secretPassword + `"
+obtained_at = 2026-04-20T10:00:00Z
+`
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+
+	r := Run(t, []string{"--config", cfg, "config", "show"}, nil)
+	if r.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", r.ExitCode, r.Stderr)
+	}
+	if strings.Contains(r.Stdout, secretPassword) || strings.Contains(r.Stderr, secretPassword) {
+		t.Fatalf("password leaked: stdout=%q stderr=%q", r.Stdout, r.Stderr)
+	}
+	if !strings.Contains(r.Stdout, "password    = present (redacted)") {
+		t.Fatalf("expected 'password = present (redacted)' line, got:\n%s", r.Stdout)
+	}
+
+	// Same profile without a saved password must report "absent".
+	cfg2 := filepath.Join(dir, "config2.toml")
+	body2 := strings.ReplaceAll(body, `password   = "`+secretPassword+`"`+"\n", "")
+	if err := os.WriteFile(cfg2, []byte(body2), 0o600); err != nil {
+		t.Fatalf("write cfg2: %v", err)
+	}
+	r2 := Run(t, []string{"--config", cfg2, "config", "show"}, nil)
+	if r2.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", r2.ExitCode, r2.Stderr)
+	}
+	if !strings.Contains(r2.Stdout, "password    = absent") {
+		t.Fatalf("expected 'password = absent' line, got:\n%s", r2.Stdout)
+	}
+}
+
+// FR-012 (amended): JSON config-show carries has_password without
+// exposing the password value.
+func TestConfigShow_JSON_HasPassword(t *testing.T) {
+	const secretPassword = "PLEASE-DO-NOT-LEAK-ME"
+	cfg := filepath.Join(t.TempDir(), "config.toml")
+	body := `default_profile = "default"
+
+[profiles.default]
+server_url = "http://example.test"
+username   = "alice"
+token      = "tk"
+password   = "` + secretPassword + `"
+obtained_at = 2026-04-20T10:00:00Z
+`
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+	r := Run(t, []string{"--config", cfg, "--json", "config", "show"}, nil)
+	if r.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", r.ExitCode, r.Stderr)
+	}
+	if strings.Contains(r.Stdout, secretPassword) {
+		t.Fatalf("password leaked into JSON output: %q", r.Stdout)
+	}
+	var got struct {
+		Profiles []struct {
+			HasPassword bool `json:"has_password"`
+		} `json:"profiles"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(r.Stdout)), &got); err != nil {
+		t.Fatalf("stdout not JSON: %v", err)
+	}
+	if len(got.Profiles) != 1 || !got.Profiles[0].HasPassword {
+		t.Fatalf("has_password not true: %+v", got)
+	}
+}
+
 // config show --json emits a parseable document with no token value.
 func TestConfigShow_JSON_Shape(t *testing.T) {
 	cfg := writeProfileFixture(t, "http://example.test")

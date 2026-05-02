@@ -1,7 +1,6 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -72,13 +71,10 @@ func EnsureDir(dir string) error {
 	if dir == "" {
 		return cerrors.New(cerrors.CodeConfig, "empty directory path", nil)
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		if errors.Is(err, os.ErrPermission) {
-			return cerrors.New(cerrors.CodeCantCreat,
-				fmt.Sprintf("cannot create %s", dir), err)
-		}
+	err := os.MkdirAll(dir, 0o700)
+	if err != nil {
 		return cerrors.New(cerrors.CodeCantCreat,
-			fmt.Sprintf("cannot create %s", dir), err)
+			"cannot create "+dir, err)
 	}
 	return nil
 }

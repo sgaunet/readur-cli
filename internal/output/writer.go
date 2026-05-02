@@ -14,7 +14,9 @@ import (
 type Mode int
 
 const (
+	// ModeHuman formats stdout primary output for human readers (default).
 	ModeHuman Mode = iota
+	// ModeJSON formats stdout primary output as JSON.
 	ModeJSON
 )
 
@@ -69,7 +71,8 @@ func (w *Writer) Primary(v any) error {
 			return cerrors.New(cerrors.CodeGeneric, "encode json output", err)
 		}
 		b = append(b, '\n')
-		if _, err := w.Stdout.Write(b); err != nil {
+		_, err = w.Stdout.Write(b)
+		if err != nil {
 			return cerrors.New(cerrors.CodeGeneric, "write stdout", err)
 		}
 		return nil
@@ -78,31 +81,40 @@ func (w *Writer) Primary(v any) error {
 	switch t := v.(type) {
 	case string:
 		_, err := fmt.Fprintln(w.Stdout, t)
-		return err
+		if err != nil {
+			return fmt.Errorf("write stdout: %w", err)
+		}
+		return nil
 	case fmt.Stringer:
 		_, err := fmt.Fprintln(w.Stdout, t.String())
-		return err
+		if err != nil {
+			return fmt.Errorf("write stdout: %w", err)
+		}
+		return nil
 	default:
 		_, err := fmt.Fprintln(w.Stdout, v)
-		return err
+		if err != nil {
+			return fmt.Errorf("write stdout: %w", err)
+		}
+		return nil
 	}
 }
 
-// Info writes a progress/info line to stderr unless quiet.
-func (w *Writer) Info(format string, args ...any) {
+// Infof writes a progress/info line to stderr unless quiet.
+func (w *Writer) Infof(format string, args ...any) {
 	if w.Verbosity == VerbosityQuiet {
 		return
 	}
 	_, _ = fmt.Fprintf(w.Stderr, format+"\n", args...)
 }
 
-// Warn writes a warning line to stderr regardless of quiet.
-func (w *Writer) Warn(format string, args ...any) {
+// Warnf writes a warning line to stderr regardless of quiet.
+func (w *Writer) Warnf(format string, args ...any) {
 	_, _ = fmt.Fprintf(w.Stderr, "warning: "+format+"\n", args...)
 }
 
-// Debug writes a debug line to stderr only in verbose mode.
-func (w *Writer) Debug(format string, args ...any) {
+// Debugf writes a debug line to stderr only in verbose mode.
+func (w *Writer) Debugf(format string, args ...any) {
 	if w.Verbosity != VerbosityVerbose {
 		return
 	}
@@ -168,7 +180,8 @@ func ConflictQuietVerbose(quiet, verbose bool) error {
 // NO_COLOR environment variable is honored here rather than in each
 // command.
 func (w *Writer) ApplyFlags(jsonMode, quiet, verbose, noColor bool) error {
-	if err := ConflictQuietVerbose(quiet, verbose); err != nil {
+	err := ConflictQuietVerbose(quiet, verbose)
+	if err != nil {
 		return err
 	}
 	if jsonMode {

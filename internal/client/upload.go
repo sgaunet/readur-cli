@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -15,12 +16,24 @@ import (
 	"sync/atomic"
 )
 
+// errEmptyLocalPath is returned when Upload is called with an empty LocalPath.
+var errEmptyLocalPath = errors.New("empty local path")
+
+// errUploadMissingDocumentID is returned when the server's upload
+// response omits the document id field.
+var errUploadMissingDocumentID = errors.New("server response missing document id")
+
 // UploadParams are the server-visible fields for a single-file upload.
+//
+// Labels are intentionally absent: the upstream Readur upload handler
+// (POST /api/documents) ignores any "labels" multipart field, and label
+// assignment is done with a separate PUT /api/labels/documents/{id}
+// call (see Client.SetDocumentLabels). The CLI's runUpload composes
+// the two calls.
 type UploadParams struct {
 	LocalPath   string
 	DisplayName string
 	Title       *string
-	Labels      []string
 	OCREnabled  *bool
 	Language    *string
 }
@@ -47,12 +60,13 @@ var UploadAttempts atomic.Int64
 // is what this client uses.
 func (c *Client) Upload(ctx context.Context, params UploadParams) (*UploadResult, error) {
 	if params.LocalPath == "" {
-		return nil, fmt.Errorf("empty local path")
+		return nil, errEmptyLocalPath
 	}
 	// Probe the file once to generate a stable multipart boundary and
 	// to surface NOT-FOUND early before network work.
-	if _, err := os.Stat(params.LocalPath); err != nil {
-		return nil, err
+	_, statErr := os.Stat(params.LocalPath)
+	if statErr != nil {
+		return nil, fmt.Errorf("stat %s: %w", params.LocalPath, statErr)
 	}
 
 	// Pre-materialize the MIME boundary so every attempt uses the same
@@ -77,11 +91,12 @@ func (c *Client) Upload(ctx context.Context, params UploadParams) (*UploadResult
 	}
 
 	var out UploadResult
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("decode upload response: %w", err)
+	decErr := json.NewDecoder(resp.Body).Decode(&out)
+	if decErr != nil {
+		return nil, fmt.Errorf("decode upload response: %w", decErr)
 	}
 	if out.DocumentID == "" {
-		return nil, fmt.Errorf("server response missing document id")
+		return nil, errUploadMissingDocumentID
 	}
 	return &out, nil
 }
@@ -103,7 +118,7 @@ func randomBoundary() string {
 func openMultipartBody(params UploadParams, boundary string) (io.Reader, error) {
 	f, err := os.Open(params.LocalPath) // #nosec G304 — path validated by upload.NewFromPath
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open %s: %w", params.LocalPath, err)
 	}
 
 	// Build the prefix (metadata parts + file-part header) and suffix
@@ -118,9 +133,6 @@ func openMultipartBody(params UploadParams, boundary string) (io.Reader, error) 
 
 	if params.Title != nil {
 		writeField("title", *params.Title)
-	}
-	if len(params.Labels) > 0 {
-		writeField("labels", strings.Join(params.Labels, ","))
 	}
 	if params.OCREnabled != nil {
 		writeField("ocr_enabled", strconv.FormatBool(*params.OCREnabled))
@@ -166,44 +178,86 @@ func (b *streamBody) Read(p []byte) (int, error) {
 	for {
 		switch b.stage {
 		case 0:
-			n, err := b.prefix.Read(p)
-			if n > 0 {
-				return n, nil
+			done, n, err := b.readPrefix(p)
+			if done {
+				return n, err
 			}
-			if err == io.EOF {
-				b.stage = 1
-				continue
-			}
-			return n, err
 		case 1:
-			if b.file == nil {
-				b.stage = 2
-				continue
+			done, n, err := b.readFile(p)
+			if done {
+				return n, err
 			}
-			n, err := b.file.Read(p)
-			if n > 0 {
-				return n, nil
-			}
-			if err == io.EOF {
-				_ = b.file.Close()
-				b.file = nil
-				b.stage = 2
-				continue
-			}
-			return n, err
 		default:
-			return b.suffix.Read(p)
+			return b.readSuffix(p)
 		}
 	}
 }
 
+// Close releases the underlying file if it is still open.
 func (b *streamBody) Close() error {
 	if b.file != nil {
 		err := b.file.Close()
 		b.file = nil
-		return err
+		if err != nil {
+			return fmt.Errorf("close file: %w", err)
+		}
 	}
 	return nil
+}
+
+// readPrefix reads from the in-memory multipart prefix.
+// Returns (shouldReturn, n, err): when shouldReturn is true the caller
+// must return (n, err); when false the loop advances to the next stage.
+func (b *streamBody) readPrefix(p []byte) (bool, int, error) {
+	n, readErr := b.prefix.Read(p)
+	if n > 0 {
+		return true, n, nil
+	}
+	if errors.Is(readErr, io.EOF) {
+		b.stage = 1
+		return false, 0, nil
+	}
+	if readErr != nil {
+		return true, n, fmt.Errorf("read multipart prefix: %w", readErr)
+	}
+	return true, n, nil
+}
+
+// readFile reads from the open file.
+// Returns (shouldReturn, n, err): when shouldReturn is true the caller
+// must return (n, err); when false the loop advances to the next stage.
+func (b *streamBody) readFile(p []byte) (bool, int, error) {
+	if b.file == nil {
+		b.stage = 2
+		return false, 0, nil
+	}
+	n, readErr := b.file.Read(p)
+	if n > 0 {
+		return true, n, nil
+	}
+	if errors.Is(readErr, io.EOF) {
+		_ = b.file.Close()
+		b.file = nil
+		b.stage = 2
+		return false, 0, nil
+	}
+	if readErr != nil {
+		return true, n, fmt.Errorf("read file: %w", readErr)
+	}
+	return true, n, nil
+}
+
+// readSuffix reads from the in-memory multipart closing boundary.
+// io.EOF is returned as-is — it signals end of the whole stream to callers.
+func (b *streamBody) readSuffix(p []byte) (int, error) {
+	n, readErr := b.suffix.Read(p)
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		return n, fmt.Errorf("read multipart suffix: %w", readErr)
+	}
+	if errors.Is(readErr, io.EOF) {
+		return n, io.EOF
+	}
+	return n, nil
 }
 
 // detectFileContentType picks the best MIME type to advertise in the
@@ -233,11 +287,12 @@ func detectFileContentType(f *os.File, filename string) (string, error) {
 	// seek back so the subsequent body stream replays from offset 0.
 	buf := make([]byte, 512)
 	n, err := io.ReadFull(f, buf)
-	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-		return "", err
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return "", fmt.Errorf("sniff content type: %w", err)
 	}
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return "", err
+	_, seekErr := f.Seek(0, io.SeekStart)
+	if seekErr != nil {
+		return "", fmt.Errorf("seek after sniff: %w", seekErr)
 	}
 	if n == 0 {
 		return "application/octet-stream", nil
@@ -246,8 +301,9 @@ func detectFileContentType(f *os.File, filename string) (string, error) {
 }
 
 func stripMIMEParams(ct string) string {
-	if i := strings.IndexByte(ct, ';'); i >= 0 {
-		return strings.TrimSpace(ct[:i])
+	before, _, found := strings.Cut(ct, ";")
+	if found {
+		return strings.TrimSpace(before)
 	}
 	return ct
 }

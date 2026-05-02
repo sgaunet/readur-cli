@@ -52,15 +52,15 @@ func newLabelsListCommand(g *Globals) *cobra.Command {
 stdout. Human output is a table sorted by name; JSON output carries
 the full record plus total count.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			profile, err := loadActiveProfile(g)
+			pctx, err := loadProfileContext(g)
 			if err != nil {
 				return err
 			}
-			httpClient := buildHTTPClient(g, profile)
+			httpClient := buildHTTPClient(g, pctx)
 
 			labels, err := httpClient.ListLabels(cmd.Context())
 			if err != nil {
-				return err
+				return fmt.Errorf("list labels: %w", err)
 			}
 			sortLabels(labels, sortBy)
 
@@ -112,10 +112,10 @@ func sortLabels(ls []client.Label, key string) {
 func renderLabelsTable(ls []client.Label) string {
 	var b strings.Builder
 	tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tCOUNT\tCOLOR\tID\tDESCRIPTION")
+	_, _ = fmt.Fprintln(tw, "NAME\tCOUNT\tCOLOR\tID\tDESCRIPTION")
 	for _, l := range ls {
 		desc := truncate(l.Description, 48)
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\n", l.Name, l.DocumentCount, dashIfEmpty(l.Color), l.ID, dashIfEmpty(desc))
+		_, _ = fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\n", l.Name, l.DocumentCount, dashIfEmpty(l.Color), l.ID, dashIfEmpty(desc))
 	}
 	_ = tw.Flush()
 	return strings.TrimRight(b.String(), "\n")
@@ -136,14 +136,14 @@ func labelToRow(l client.Label) LabelRow {
 	return r
 }
 
-func truncate(s string, max int) string {
-	if len(s) <= max {
+func truncate(s string, limit int) string {
+	if len(s) <= limit {
 		return s
 	}
-	if max < 4 {
-		return s[:max]
+	if limit < 4 {
+		return s[:limit]
 	}
-	return s[:max-1] + "…"
+	return s[:limit-1] + "…"
 }
 
 func dashIfEmpty(s string) string {

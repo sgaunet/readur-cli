@@ -2,8 +2,12 @@ package client_test
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/sgaunet/readur-cli/internal/client"
@@ -88,6 +92,101 @@ func TestListLabels_401_Is_AUTH(t *testing.T) {
 	}
 	if cerrors.Classify(err) != cerrors.CodeAuth {
 		t.Fatalf("code = %d, want AUTH", cerrors.Classify(err))
+	}
+}
+
+func TestSetDocumentLabels_EmptyIsNoOp(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+	}))
+	defer srv.Close()
+	c := client.NewClient(client.Options{ServerURL: srv.URL, Token: "tk"})
+	if err := c.SetDocumentLabels(context.Background(), "doc-1", nil); err != nil {
+		t.Fatalf("nil labels: %v", err)
+	}
+	if err := c.SetDocumentLabels(context.Background(), "doc-1", []string{}); err != nil {
+		t.Fatalf("empty labels: %v", err)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("server hit %d times, want 0", hits.Load())
+	}
+}
+
+func TestSetDocumentLabels_HappyPathPutsLabelIDs(t *testing.T) {
+	var (
+		gotMethod string
+		gotPath   string
+		gotBody   []byte
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c := client.NewClient(client.Options{ServerURL: srv.URL, Token: "tk"})
+	err := c.SetDocumentLabels(context.Background(), "doc-1",
+		[]string{"d7b9d5d7-1539-4042-a19c-059423d25436", "00000000-0000-0000-0000-000000000002"})
+	if err != nil {
+		t.Fatalf("SetDocumentLabels: %v", err)
+	}
+
+	if gotMethod != http.MethodPut {
+		t.Fatalf("method = %q, want PUT", gotMethod)
+	}
+	if gotPath != "/api/labels/documents/doc-1" {
+		t.Fatalf("path = %q", gotPath)
+	}
+	var parsed struct {
+		LabelIDs []string `json:"label_ids"`
+	}
+	if err := json.Unmarshal(gotBody, &parsed); err != nil {
+		t.Fatalf("body not JSON: %v: %q", err, gotBody)
+	}
+	if strings.Join(parsed.LabelIDs, ",") !=
+		"d7b9d5d7-1539-4042-a19c-059423d25436,00000000-0000-0000-0000-000000000002" {
+		t.Fatalf("label_ids = %v", parsed.LabelIDs)
+	}
+}
+
+func TestSetDocumentLabels_404_Is_GENERIC(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"document not found"}`, http.StatusNotFound)
+	}))
+	defer srv.Close()
+	c := client.NewClient(client.Options{ServerURL: srv.URL, Token: "tk"})
+	err := c.SetDocumentLabels(context.Background(), "missing", []string{"id-1"})
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if cerrors.Classify(err) != cerrors.CodeGeneric {
+		t.Fatalf("code = %d, want GENERIC", cerrors.Classify(err))
+	}
+}
+
+func TestSetDocumentLabels_401_Is_AUTH(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	c := client.NewClient(client.Options{ServerURL: srv.URL, Token: "tk"})
+	err := c.SetDocumentLabels(context.Background(), "doc-1", []string{"id-1"})
+	if err == nil {
+		t.Fatalf("expected AUTH error")
+	}
+	if cerrors.Classify(err) != cerrors.CodeAuth {
+		t.Fatalf("code = %d, want AUTH", cerrors.Classify(err))
+	}
+}
+
+func TestSetDocumentLabels_EmptyDocumentID_Errors(t *testing.T) {
+	c := client.NewClient(client.Options{ServerURL: "http://nowhere", Token: "tk"})
+	err := c.SetDocumentLabels(context.Background(), "", []string{"id-1"})
+	if err == nil {
+		t.Fatalf("expected error for empty doc id")
 	}
 }
 

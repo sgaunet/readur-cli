@@ -3,10 +3,15 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"time"
 )
+
+// errAuthMissingToken is returned when the server's login response omits
+// the token field.
+var errAuthMissingToken = errors.New("server response missing token field")
 
 // LoginRequest is the JSON body for POST /api/auth/login.
 type LoginRequest struct {
@@ -42,12 +47,18 @@ type loginWire struct {
 // response. The username in the result is taken from the server's
 // echo when present, otherwise from the request — so callers can
 // always trust `.Username`.
+//
+// Login IS the rotation endpoint: a 401 here means the supplied
+// credentials are wrong, never "token expired". Login therefore
+// disables automatic rotation for its own DoJSON call so a bad
+// password can never trigger a second login attempt.
 func (c *Client) Login(ctx context.Context, req LoginRequest) (*LoginResult, error) {
+	// #nosec G117 — LoginRequest.Password is intentionally marshaled to send credentials to the server.
 	body, err := json.Marshal(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("marshal login request: %w", err)
 	}
-	resp, err := c.DoJSON(ctx, "POST", c.URL("/api/auth/login"), body)
+	resp, err := c.DoJSON(skipRotateCtx(ctx), "POST", c.URL("/api/auth/login"), body)
 	if err != nil {
 		return nil, err
 	}
@@ -59,11 +70,12 @@ func (c *Client) Login(ctx context.Context, req LoginRequest) (*LoginResult, err
 	}
 
 	var wire loginWire
-	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
+	err = json.NewDecoder(resp.Body).Decode(&wire)
+	if err != nil {
 		return nil, fmt.Errorf("decode login response: %w", err)
 	}
 	if wire.Token == "" {
-		return nil, fmt.Errorf("server response missing token field")
+		return nil, errAuthMissingToken
 	}
 
 	out := &LoginResult{
@@ -74,7 +86,8 @@ func (c *Client) Login(ctx context.Context, req LoginRequest) (*LoginResult, err
 		out.Username = req.Username
 	}
 	if wire.ExpiresAt != "" {
-		if t, err := time.Parse(time.RFC3339, wire.ExpiresAt); err == nil {
+		t, parseErr := time.Parse(time.RFC3339, wire.ExpiresAt)
+		if parseErr == nil {
 			out.ExpiresAt = t
 		}
 	}

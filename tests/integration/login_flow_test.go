@@ -163,6 +163,94 @@ func TestLogin_JSON_SuccessShape(t *testing.T) {
 	}
 }
 
+// FR-012 (amended): --save-password persists the password on disk so
+// subsequent commands can silently rotate the token.
+func TestLogin_SavePasswordFlag_PersistsPassword(t *testing.T) {
+	srv := NewFakeServer(t)
+	cfg := filepath.Join(t.TempDir(), "config.toml")
+
+	const password = "keep-me-safe"
+	r := runCLIStdin(t, []string{
+		"--config", cfg,
+		"login", "--server", srv.URL(),
+		"--username", "alice",
+		"--password-stdin", "--save-password",
+	}, password+"\n", nil)
+	if r.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", r.ExitCode, r.Stderr)
+	}
+
+	body, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(body), `password = "`+password+`"`) {
+		t.Fatalf("password not persisted:\n%s", body)
+	}
+}
+
+// FR-012 (amended): --forget-password clears a previously-saved
+// password from the profile after a successful login.
+func TestLogin_ForgetPasswordFlag_ClearsPassword(t *testing.T) {
+	srv := NewFakeServer(t)
+	cfg := filepath.Join(t.TempDir(), "config.toml")
+
+	// Round 1: save a password.
+	r1 := runCLIStdin(t, []string{
+		"--config", cfg, "login",
+		"--server", srv.URL(),
+		"--username", "alice",
+		"--password-stdin", "--save-password",
+	}, "first-pw\n", nil)
+	if r1.ExitCode != 0 {
+		t.Fatalf("first login: %s", r1.Stderr)
+	}
+	body1, _ := os.ReadFile(cfg)
+	if !strings.Contains(string(body1), `password = "first-pw"`) {
+		t.Fatalf("password not saved in round 1:\n%s", body1)
+	}
+
+	// Round 2: login again with --forget-password; the stored password
+	// must be gone afterwards.
+	r2 := runCLIStdin(t, []string{
+		"--config", cfg, "login",
+		"--server", srv.URL(),
+		"--username", "alice",
+		"--password-stdin", "--forget-password",
+	}, "second-pw\n", nil)
+	if r2.ExitCode != 0 {
+		t.Fatalf("second login: %s", r2.Stderr)
+	}
+	body2, _ := os.ReadFile(cfg)
+	if strings.Contains(string(body2), "password = ") {
+		t.Fatalf("password key still present after --forget-password:\n%s", body2)
+	}
+}
+
+// --save-password sets password_saved=true in the JSON envelope;
+// omitting the flag leaves it false.
+func TestLogin_JSON_ReflectsPasswordSaved(t *testing.T) {
+	srv := NewFakeServer(t)
+	cfg := filepath.Join(t.TempDir(), "config.toml")
+
+	r := runCLIStdin(t, []string{
+		"--config", cfg, "--json",
+		"login", "--server", srv.URL(),
+		"--username", "alice", "--password-stdin",
+		"--save-password",
+	}, "secret\n", nil)
+	if r.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", r.ExitCode, r.Stderr)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(r.Stdout)), &got); err != nil {
+		t.Fatalf("stdout not JSON: %v", err)
+	}
+	if got["password_saved"] != true {
+		t.Fatalf("password_saved = %v, want true", got["password_saved"])
+	}
+}
+
 // Second login with a different --profile creates a second profile
 // without disturbing the first, and --profile on subsequent commands
 // selects between them.

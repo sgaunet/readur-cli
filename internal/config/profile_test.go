@@ -170,6 +170,38 @@ func TestResolveProfile_UnknownName(t *testing.T) {
 	}
 }
 
+func TestProfile_TOMLRoundtrip_WithPassword(t *testing.T) {
+	s := newStore(t)
+	p := validProfile()
+	p.Password = "s3cret-on-disk"
+
+	if err := s.Save(map[string]*config.Profile{"work": p}, "work"); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	profiles, _, err := s.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := profiles["work"]
+	if got.Password != "s3cret-on-disk" {
+		t.Fatalf("Password not persisted, got %q", got.Password)
+	}
+
+	// Sanity: absent password stays empty on reload.
+	p2 := validProfile()
+	p2.Name = "personal"
+	if err := s.Save(map[string]*config.Profile{"work": p, "personal": p2}, "work"); err != nil {
+		t.Fatalf("Save 2: %v", err)
+	}
+	profiles, _, err = s.Load()
+	if err != nil {
+		t.Fatalf("Load 2: %v", err)
+	}
+	if profiles["personal"].Password != "" {
+		t.Fatalf("unset Password should load as empty, got %q", profiles["personal"].Password)
+	}
+}
+
 func TestProfile_Save_AtomicReplace(t *testing.T) {
 	s := newStore(t)
 

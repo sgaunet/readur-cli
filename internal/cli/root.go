@@ -42,7 +42,10 @@ func BuildRoot() (*cobra.Command, *Globals) {
 	root := &cobra.Command{
 		Use:           "readur",
 		Short:         "Upload documents to a Readur server.",
-		Long:          "readur is a command-line client for the Readur document ingestion API. It uploads one or many documents from the local filesystem, manages named server profiles, and supports human-readable and JSON output for scripted pipelines.",
+		Long: "readur is a command-line client for the Readur document ingestion API. " +
+			"It uploads one or many documents from the local filesystem, manages " +
+			"named server profiles, and supports human-readable and JSON output " +
+			"for scripted pipelines.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
@@ -67,7 +70,8 @@ func BuildRoot() (*cobra.Command, *Globals) {
 	fs.BoolVar(&g.Quiet, "quiet", false, "suppress non-essential stderr output")
 	fs.BoolVar(&g.Verbose, "verbose", false, "emit debug-level diagnostics on stderr")
 	fs.BoolVar(&g.NoColor, "no-color", false, "disable ANSI color in human output")
-	fs.BoolVar(&g.InsecureSkipVerify, "insecure-skip-tls-verify", false, "disable server TLS certificate verification (warning printed per request)")
+	fs.BoolVar(&g.InsecureSkipVerify, "insecure-skip-tls-verify", false,
+		"disable server TLS certificate verification (warning printed per request)")
 
 	root.AddCommand(newVersionCommand(g))
 	root.AddCommand(newUploadCommand(g))

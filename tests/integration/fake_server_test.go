@@ -39,26 +39,41 @@ type FakeServer struct {
 	mu sync.Mutex
 
 	// Policy knobs (mutate before test dispatch):
-	Token        string  // expected bearer; "" disables auth check
-	Username     string  // echoed in login and users/profile responses
-	Expiry       string  // token_expires_at in login response
-	Uploads5xxN  int32   // N upload attempts return 503 before succeeding
-	Upload429N   int32   // N upload attempts return 429 before succeeding
-	UploadOversize bool  // upload returns 413 always
-	UploadInvalid  bool  // upload returns 400 always
-	RetryAfter    string // Retry-After header value when injecting 429
-	NextDocID     func() string
+	Token          string // expected bearer; "" disables auth check
+	Username       string // echoed in login and users/profile responses
+	Expiry         string // token_expires_at in login response
+	Uploads5xxN    int32  // N upload attempts return 503 before succeeding
+	Upload429N     int32  // N upload attempts return 429 before succeeding
+	UploadOversize bool   // upload returns 413 always
+	UploadInvalid  bool   // upload returns 400 always
+	RetryAfter     string // Retry-After header value when injecting 429
+	NextDocID      func() string
+
+	// TokenRevokedUntilRelogin, when true, makes every protected
+	// endpoint return 401 regardless of the bearer token. The next
+	// successful /api/auth/login handler invocation atomically resets
+	// it to false, modelling "the server revoked the outstanding
+	// token; the user's credentials still work".
+	TokenRevokedUntilRelogin atomic.Bool
+
+	// LoginRejectPassword, when non-empty, forces /api/auth/login to
+	// return 401 whenever the request body's password equals this
+	// value. Models "the saved password is now wrong" while leaving
+	// all other passwords acceptable.
+	LoginRejectPassword string
 
 	// Captured traffic:
-	Uploads      []UploadRecord
-	Bulks        []BulkRecord
-	Labels       []map[string]any // seeded labels for GET /api/labels
-	LoginHits    atomic.Int32
-	ProfileHits  atomic.Int32
-	UploadHits   atomic.Int32
-	BulkHits     atomic.Int32
-	LabelsHits   atomic.Int32
-	AuthFailures atomic.Int32
+	Uploads          []UploadRecord
+	Bulks            []BulkRecord
+	Labels           []map[string]any    // seeded labels for GET /api/labels
+	DocumentLabels   map[string][]string // captured PUT /api/labels/documents/{id} bodies
+	LoginHits        atomic.Int32
+	ProfileHits      atomic.Int32
+	UploadHits       atomic.Int32
+	BulkHits         atomic.Int32
+	LabelsHits       atomic.Int32
+	AttachLabelsHits atomic.Int32
+	AuthFailures     atomic.Int32
 
 	srv *httptest.Server
 }
@@ -95,6 +110,10 @@ func NewFakeServer(t *testing.T) *FakeServer {
 	})
 	mux.HandleFunc("/api/documents/bulk-upload", f.bulkUpload)
 	mux.HandleFunc("/api/labels", f.labels)
+	// PUT /api/labels/documents/{document_id} — replace document labels.
+	// http.ServeMux dispatches by longest prefix; this handler owns
+	// any path starting with /api/labels/documents/.
+	mux.HandleFunc("/api/labels/documents/", f.attachDocumentLabels)
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
 	return f
@@ -123,12 +142,22 @@ func (f *FakeServer) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Simulate credential validation: accept exact username, any non-empty
-	// password; special value "BAD_PASSWORD" forces 401.
+	// password; special value "BAD_PASSWORD" forces 401. Tests that want
+	// to model "the saved password is now wrong" set LoginRejectPassword
+	// to the password string that should now fail.
 	if body.Password == "BAD_PASSWORD" || body.Password == "" {
 		f.AuthFailures.Add(1)
 		http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
 		return
 	}
+	if f.LoginRejectPassword != "" && body.Password == f.LoginRejectPassword {
+		f.AuthFailures.Add(1)
+		http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
+		return
+	}
+	// Successful login clears any outstanding "token revoked" flag: the
+	// server considers this session freshly authenticated.
+	f.TokenRevokedUntilRelogin.Store(false)
 	resp := map[string]any{
 		"token":      f.Token,
 		"user":       map[string]string{"username": body.Username},
@@ -140,6 +169,11 @@ func (f *FakeServer) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *FakeServer) requireAuth(w http.ResponseWriter, r *http.Request) bool {
+	if f.TokenRevokedUntilRelogin.Load() {
+		f.AuthFailures.Add(1)
+		http.Error(w, `{"error":"token revoked"}`, http.StatusUnauthorized)
+		return false
+	}
 	if f.Token == "" {
 		return true
 	}
@@ -286,6 +320,41 @@ func (f *FakeServer) listDocuments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"documents": []any{}, "total": 0})
+}
+
+// attachDocumentLabels handles PUT /api/labels/documents/{document_id}.
+// It records the label_ids body keyed by document id so tests can
+// assert post-upload label assignment without parsing wire bytes.
+func (f *FakeServer) attachDocumentLabels(w http.ResponseWriter, r *http.Request) {
+	f.AttachLabelsHits.Add(1)
+	if !f.requireAuth(w, r) {
+		return
+	}
+	if r.Method != http.MethodPut {
+		w.Header().Set("Allow", "PUT, GET")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	const prefix = "/api/labels/documents/"
+	docID := strings.TrimPrefix(r.URL.Path, prefix)
+	if docID == "" || strings.Contains(docID, "/") {
+		http.Error(w, "missing or invalid document id", http.StatusNotFound)
+		return
+	}
+	var body struct {
+		LabelIDs []string `json:"label_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	f.mu.Lock()
+	if f.DocumentLabels == nil {
+		f.DocumentLabels = map[string][]string{}
+	}
+	f.DocumentLabels[docID] = append([]string(nil), body.LabelIDs...)
+	f.mu.Unlock()
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // labels handles GET /api/labels. It returns whatever has been seeded

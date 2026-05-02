@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 var (
@@ -112,9 +113,15 @@ obtained_at = 2026-04-20T10:00:00Z
 }
 
 // FR-001 + FR-002: upload succeeds, metadata arrives, document id is
-// returned to the user.
+// returned to the user. Labels named on the CLI are resolved against
+// /api/labels and attached via the separate PUT endpoint after the
+// upload — this is the wire layout Readur actually uses.
 func TestUpload_HappyPath(t *testing.T) {
 	srv := NewFakeServer(t)
+	srv.Labels = []map[string]any{
+		{"id": "label-uuid-invoices", "name": "invoices"},
+		{"id": "label-uuid-q2", "name": "q2"},
+	}
 	path := filepath.Join(t.TempDir(), "q2.pdf")
 	if err := os.WriteFile(path, []byte("scanned content"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
@@ -145,11 +152,101 @@ func TestUpload_HappyPath(t *testing.T) {
 	if u.Title != "Q2 Invoice" {
 		t.Fatalf("title = %q", u.Title)
 	}
-	if strings.Join(u.Labels, ",") != "invoices,q2" {
-		t.Fatalf("labels = %v", u.Labels)
+	// The upload multipart must NOT carry labels — they are attached
+	// separately. The fake's UploadRecord still parses any "labels"
+	// field for legacy fixtures, so assert the slice is empty.
+	if len(u.Labels) != 0 {
+		t.Fatalf("upload multipart leaked labels: %v", u.Labels)
 	}
 	if u.Language != "eng" {
 		t.Fatalf("language = %q", u.Language)
+	}
+	got := srv.DocumentLabels["doc-0001"]
+	if strings.Join(got, ",") != "label-uuid-invoices,label-uuid-q2" {
+		t.Fatalf("attached labels = %v", got)
+	}
+	if srv.AttachLabelsHits.Load() != 1 {
+		t.Fatalf("AttachLabelsHits = %d, want 1", srv.AttachLabelsHits.Load())
+	}
+}
+
+// Labels with spaces and Unicode (the user's real bug report) must
+// resolve through /api/labels and reach the PUT endpoint as UUIDs.
+// Inputs that already look like UUIDs pass through unchanged.
+func TestUpload_LabelsResolveByName_AndPassUUIDsThrough(t *testing.T) {
+	srv := NewFakeServer(t)
+	srv.Labels = []map[string]any{
+		{"id": "d7b9d5d7-1539-4042-a19c-059423d25436", "name": "Médical Basile"},
+		{"id": "00000000-0000-0000-0000-000000000002", "name": "To Review"},
+	}
+	path := filepath.Join(t.TempDir(), "claude.md")
+	_ = os.WriteFile(path, []byte("hello"), 0o600)
+	cfg := writeProfile(t, srv.URL(), srv.Token, false)
+
+	r := runCLI(t, []string{
+		"--config", cfg,
+		"upload", path,
+		"--label", "Médical Basile",
+		"--label", "To Review",
+		"--label", "11111111-2222-3333-4444-555555555555", // bare UUID, no lookup
+	}, nil)
+	if r.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", r.ExitCode, r.Stderr)
+	}
+	got := srv.DocumentLabels["doc-0001"]
+	want := "d7b9d5d7-1539-4042-a19c-059423d25436,00000000-0000-0000-0000-000000000002,11111111-2222-3333-4444-555555555555"
+	if strings.Join(got, ",") != want {
+		t.Fatalf("attached labels = %v\nwant %s", got, want)
+	}
+	// Only one /api/labels call regardless of how many names need lookup.
+	if srv.LabelsHits.Load() != 1 {
+		t.Fatalf("LabelsHits = %d, want 1", srv.LabelsHits.Load())
+	}
+}
+
+// Unknown label name → CodeUsage (exit 2) BEFORE upload, so no orphan
+// document is created on the server.
+func TestUpload_UnknownLabelName_FailsBeforeUpload(t *testing.T) {
+	srv := NewFakeServer(t)
+	srv.Labels = []map[string]any{
+		{"id": "id-known", "name": "Known"},
+	}
+	path := filepath.Join(t.TempDir(), "x.pdf")
+	_ = os.WriteFile(path, []byte("x"), 0o600)
+	cfg := writeProfile(t, srv.URL(), srv.Token, false)
+
+	r := runCLI(t, []string{"--config", cfg, "upload", path, "--label", "DoesNotExist"}, nil)
+	if r.ExitCode != 2 {
+		t.Fatalf("exit = %d, want 2 USAGE; stderr=%q", r.ExitCode, r.Stderr)
+	}
+	if !strings.Contains(r.Stderr, "DoesNotExist") || !strings.Contains(r.Stderr, "labels list") {
+		t.Fatalf("stderr should name the label and hint `labels list`: %q", r.Stderr)
+	}
+	if srv.UploadHits.Load() != 0 {
+		t.Fatalf("UploadHits = %d, want 0 (must fail before upload)", srv.UploadHits.Load())
+	}
+	if srv.AttachLabelsHits.Load() != 0 {
+		t.Fatalf("AttachLabelsHits = %d, want 0", srv.AttachLabelsHits.Load())
+	}
+}
+
+// Upload with no --label must skip both /api/labels and the PUT call —
+// no extra round-trips for the common case.
+func TestUpload_NoLabels_NoLabelEndpointTouched(t *testing.T) {
+	srv := NewFakeServer(t)
+	path := filepath.Join(t.TempDir(), "x.pdf")
+	_ = os.WriteFile(path, []byte("x"), 0o600)
+	cfg := writeProfile(t, srv.URL(), srv.Token, false)
+
+	r := runCLI(t, []string{"--config", cfg, "upload", path}, nil)
+	if r.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", r.ExitCode, r.Stderr)
+	}
+	if srv.LabelsHits.Load() != 0 {
+		t.Fatalf("LabelsHits = %d, want 0", srv.LabelsHits.Load())
+	}
+	if srv.AttachLabelsHits.Load() != 0 {
+		t.Fatalf("AttachLabelsHits = %d, want 0", srv.AttachLabelsHits.Load())
 	}
 }
 
@@ -179,6 +276,7 @@ func TestUpload_StdoutStderrSplit(t *testing.T) {
 // JSON mode produces the full shape per contracts/json-output.md.
 func TestUpload_JSONMode_Shape(t *testing.T) {
 	srv := NewFakeServer(t)
+	srv.Labels = []map[string]any{{"id": "id-x", "name": "x"}}
 	path := filepath.Join(t.TempDir(), "doc.pdf")
 	_ = os.WriteFile(path, []byte("abcdef"), 0o600)
 	cfg := writeProfile(t, srv.URL(), srv.Token, false)
@@ -268,5 +366,116 @@ func TestUpload_AuthFailed(t *testing.T) {
 	r := runCLI(t, []string{"--config", cfg, "upload", path}, nil)
 	if r.ExitCode != 3 {
 		t.Fatalf("exit = %d, want 3 AUTH; stderr=%q", r.ExitCode, r.Stderr)
+	}
+}
+
+// writeProfileWithPassword is a superset of writeProfile that also
+// persists a password and/or a specific token_expiry, exercising the
+// saved-credentials + rotation paths.
+func writeProfileWithPassword(t *testing.T, serverURL, token, password string, tokenExpiry time.Time) string {
+	t.Helper()
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.toml")
+	body := `default_profile = "default"
+
+[profiles.default]
+server_url = "` + serverURL + `"
+username   = "alice"
+token      = "` + token + `"
+obtained_at = 2026-04-20T10:00:00Z
+`
+	if password != "" {
+		body += `password   = "` + password + `"` + "\n"
+	}
+	if !tokenExpiry.IsZero() {
+		body += `token_expiry = ` + tokenExpiry.UTC().Format(time.RFC3339) + "\n"
+	}
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatalf("write profile: %v", err)
+	}
+	return cfg
+}
+
+// FR-012 / US3 Scenario 2 (amended): on 401 with a saved password, the
+// CLI transparently re-authenticates and retries the original upload.
+func TestUpload_RotatesOn401AndSucceeds(t *testing.T) {
+	srv := NewFakeServer(t)
+	// The token in the profile matches srv.Token, but the server has
+	// "revoked" it until the next /api/auth/login call, forcing a 401
+	// on the first upload attempt.
+	srv.TokenRevokedUntilRelogin.Store(true)
+
+	path := filepath.Join(t.TempDir(), "x.pdf")
+	_ = os.WriteFile(path, []byte("rotated"), 0o600)
+	cfg := writeProfileWithPassword(t, srv.URL(), srv.Token, "correct-pw", time.Time{})
+
+	r := runCLI(t, []string{"--config", cfg, "upload", path}, nil)
+	if r.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q stdout=%q", r.ExitCode, r.Stderr, r.Stdout)
+	}
+	if got := srv.LoginHits.Load(); got != 1 {
+		t.Fatalf("LoginHits = %d, want 1 (single rotation)", got)
+	}
+	if got := srv.UploadHits.Load(); got != 2 {
+		t.Fatalf("UploadHits = %d, want 2 (first 401 + replay 200)", got)
+	}
+	if !strings.Contains(r.Stdout, "uploaded:") {
+		t.Fatalf("stdout missing success line: %q", r.Stdout)
+	}
+}
+
+// FR-012 (amended): if the profile's token_expiry is past or within
+// 60 s, the client rotates BEFORE issuing the first real request,
+// avoiding a wasted 401 round-trip.
+func TestUpload_ProactiveRotate_AvoidsWasted401(t *testing.T) {
+	srv := NewFakeServer(t)
+
+	path := filepath.Join(t.TempDir(), "x.pdf")
+	_ = os.WriteFile(path, []byte("proactive"), 0o600)
+	// Expiry already in the past — triggers proactive rotation.
+	expired := time.Now().Add(-1 * time.Hour)
+	cfg := writeProfileWithPassword(t, srv.URL(), srv.Token, "correct-pw", expired)
+
+	r := runCLI(t, []string{"--config", cfg, "upload", path}, nil)
+	if r.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", r.ExitCode, r.Stderr)
+	}
+	if got := srv.LoginHits.Load(); got != 1 {
+		t.Fatalf("LoginHits = %d, want 1 (proactive rotation)", got)
+	}
+	if got := srv.UploadHits.Load(); got != 1 {
+		t.Fatalf("UploadHits = %d, want 1 (no wasted round-trip)", got)
+	}
+	// The on-rotate callback must have written the fresh expiry back to
+	// disk: TokenExpiry is no longer in the past.
+	raw, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatalf("read cfg: %v", err)
+	}
+	if strings.Contains(string(raw), expired.UTC().Format(time.RFC3339)) {
+		t.Fatalf("expected token_expiry to be refreshed in config; got:\n%s", raw)
+	}
+}
+
+// FR-012 (amended): saved password now rejected by the server → the
+// CLI surfaces CodeAuth with a hint to re-run `login`.
+func TestUpload_RotationFailsWithInvalidSavedPassword(t *testing.T) {
+	srv := NewFakeServer(t)
+	srv.TokenRevokedUntilRelogin.Store(true) // force 401 on upload
+	srv.LoginRejectPassword = "stored-but-wrong"
+
+	path := filepath.Join(t.TempDir(), "x.pdf")
+	_ = os.WriteFile(path, []byte("x"), 0o600)
+	cfg := writeProfileWithPassword(t, srv.URL(), srv.Token, "stored-but-wrong", time.Time{})
+
+	r := runCLI(t, []string{"--config", cfg, "upload", path}, nil)
+	if r.ExitCode != 3 {
+		t.Fatalf("exit = %d, want 3 AUTH; stderr=%q", r.ExitCode, r.Stderr)
+	}
+	if !strings.Contains(r.Stderr, "readur login") {
+		t.Fatalf("stderr missing `readur login` hint: %q", r.Stderr)
+	}
+	if got := srv.LoginHits.Load(); got != 1 {
+		t.Fatalf("LoginHits = %d, want exactly 1 (no retry after rotate failure)", got)
 	}
 }
