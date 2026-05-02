@@ -1,0 +1,85 @@
+version: 2
+project_name: readur-cli
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: readur
+    main: ./cmd/readur
+    binary: readur
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/sgaunet/readur-cli/internal/cli.version={{.Version}}
+      - -X github.com/sgaunet/readur-cli/internal/cli.commit={{.ShortCommit}}
+      - -X github.com/sgaunet/readur-cli/internal/cli.buildDate={{.Date}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-dev"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+homebrew_casks:
+  - name: readur-cli
+    ids:
+      - default
+    homepage: 'https://github.com/sgaunet/readur-cli'
+    description: 'Command-line client for the Readur document ingestion server: login, upload files or directories, manage labels, with bounded retry and JSON output.'
+    directory: Casks
+    binaries:
+      - readur
+    commit_author:
+      name: sgaunet
+      email: 1552102+sgaunet@users.noreply.github.com
+    repository:
+      owner: sgaunet
+      name: homebrew-tools
+      # Token with 'repo' scope is required for pushing to a different repository
+      token: '{{ .Env.HOMEBREW_TAP_TOKEN }}'
+
+release:
+  github:
+    owner: sgaunet
+    name: readur-cli
+  draft: false
+  prerelease: auto
