@@ -1,6 +1,5 @@
 [![GitHub release](https://img.shields.io/github/release/sgaunet/readur-cli.svg)](https://github.com/sgaunet/readur-cli/releases/latest)
 ![GitHub Downloads](https://img.shields.io/github/downloads/sgaunet/readur-cli/total)
-[![Go Report Card](https://goreportcard.com/badge/github.com/sgaunet/readur-cli)](https://goreportcard.com/report/github.com/sgaunet/readur-cli)
 ![Test Coverage](https://raw.githubusercontent.com/wiki/sgaunet/readur-cli/coverage-badge.svg)
 [![linter](https://github.com/sgaunet/readur-cli/actions/workflows/linter.yml/badge.svg)](https://github.com/sgaunet/readur-cli/actions/workflows/linter.yml)
 [![coverage](https://github.com/sgaunet/readur-cli/actions/workflows/coverage.yml/badge.svg)](https://github.com/sgaunet/readur-cli/actions/workflows/coverage.yml)
