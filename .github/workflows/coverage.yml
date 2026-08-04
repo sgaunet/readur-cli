@@ -18,15 +18,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Setup Go environment
-      # Uses Go version from go.mod for consistency
-      - name: Set up Go
-        uses: actions/setup-go@v7
+      # Toolchain (Go, task, golangci-lint, ...) is pinned in mise.toml
+      - uses: jdx/mise-action@v4
         with:
-          go-version-file: 'go.mod'
-
-      # Run tests with coverage
-      # CUSTOMIZE: Adjust coverage commands for your project structure
+          install: true
+          cache: true
       - name: coverage
         id: coverage
         run: |
